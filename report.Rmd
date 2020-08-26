@@ -1,0 +1,170 @@
+---
+title: "Analysis of Healthy and Economic Impacts on NOOAA's Storm Database from 1950 - 2011"
+author: "Xuecheng LIU"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+## Synopsis
+
+### The Dataset
+This project explores [the U.S. National Oceanic and Atmospheric Administration's (NOAA) storm database from 1950 to 2011](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) which tracks characteristics of major storms and weather events in the United States. More detailed information can be found in [National Weather Service Storm Data Documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) and [National Climatic Data Center Storm Events FAQ](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2FNCDC%20Storm%20Events-FAQ%20Page.pdf). 
+
+### The Questions
+
+1. Across the United States, which types of events are most harmful with respect to population health? 
+2. Across the United States, which types of events have the greatest economic consequences? 
+
+### The Variables Needed for Analysis
+
+* EVTYPE
+* FATALITIES
+* INJURIES
+* PROPDMG
+* PRODMGEXP
+* CROPDMG
+* CROPDMGEXP
+
+## Data Processing
+
+### Load Data and Packages
+This step will download the data if necessary. The `evtyp_list`, as its name indicates, is a vector containing the names of 48 weather events and will be used to justify typos in `EVTYPE`.
+```{r, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(R.utils)
+library(stringdist)
+
+if (!file.exists("repdata%2Fdata%2FStormData.csv")) {
+        if (!file.exists("repdata%2Fdata%2FStormData.csv.bz2")) {
+                download.file(url = "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2",
+                              destfile = "repdata%2Fdata%2FStormData.csv.bz2", method = "curl")
+        }
+        bunzip2("repdata%2Fdata%2FStormData.csv.bz2", remove = FALSE)
+}
+
+storm <- read_csv("repdata%2Fdata%2FStormData.csv")
+evtype_list <- read_table("evtype.txt", col_names = FALSE)[[1]]
+```
+
+### Subset
+Select the 7 needed variables mentioned before.
+```{r}
+storm <- select(storm, EVTYPE, FATALITIES, INJURIES, PROPDMG, PROPDMGEXP, CROPDMG, CROPDMGEXP)
+```
+The new `storm` dataset looks like:
+```{r}
+storm
+```
+
+### Clean
+1. Make variable names and `evtype_list` to lower case.
+```{r}
+storm <- mutate(storm, EVTYPE = tolower(EVTYPE))
+evtype_list <- tolower(evtype_list)
+names(storm) <- tolower(names(storm))
+```
+
+2. There are many typos in `evtype` and other events causing more than 48 unique events recorded(nearly a thousand).
+```{r}
+as_tibble(unique(storm$evtype))
+```
+`stringdist` package provides `amatch()` function for Approximate String Matching. `evtype_list` is the lookup table for matching. However, some elements that still cannot be matched, such as "summary of June", will return NAs. The strategy for these NAs is to use `drop_na()` to drop rows of `evtype` containing NA.
+
+```{r}
+storm$evtype <- evtype_list[amatch(storm$evtype, evtype_list, maxDist = 8)]
+storm <- drop_na(storm, evtype)
+```
+After matching, the unique event numver in `evtype` is perfectly 48.
+```{r}
+unique(storm$evtype)
+```
+
+3. Replace characters in `propdmgexp` and `cropdmgexp` with corresponding exponent values.  
+
+B or b = Billion, M or m = Million, K or k = Thousand, H or h = Hundred. The number from one to ten represent the power of ten (10^The number). The symbols "-", "+" and "?" refers to less than, greater than and low certainty. 
+
+```{r}
+storm$propdmgexp <- gsub("[Hh]", "2", storm$propdmgexp)
+storm$propdmgexp <- gsub("[Kk]", "3", storm$propdmgexp)
+storm$propdmgexp <- gsub("[Mm]", "6", storm$propdmgexp)
+storm$propdmgexp <- gsub("[Bb]", "9", storm$propdmgexp)
+storm$propdmgexp <- gsub("\\+", "1", storm$propdmgexp)
+storm$propdmgexp <- gsub("\\?|\\-|\\ ", "0", storm$propdmgexp)
+
+storm$cropdmgexp <- gsub("[Hh]", "2", storm$cropdmgexp)
+storm$cropdmgexp <- gsub("[Kk]", "3", storm$cropdmgexp)
+storm$cropdmgexp <- gsub("[Mm]", "6", storm$cropdmgexp)
+storm$cropdmgexp <- gsub("[Bb]", "9", storm$cropdmgexp)
+storm$cropdmgexp <- gsub("\\+", "1", storm$cropdmgexp)
+storm$cropdmgexp <- gsub("\\?|\\-|\\ ", "0", storm$cropdmgexp)
+
+storm$propdmgexp <- as.numeric(storm$propdmgexp)
+storm$cropdmgexp <- as.numeric(storm$cropdmgexp)
+
+storm$propdmgexp[is.na(storm$propdmgexp)] <- 0
+storm$cropdmgexp[is.na(storm$cropdmgexp)] <- 0
+```
+
+## Analysis
+
+### Impact on Population Health
+A new variable called `toll`, which equals to `fatalities` plus `injuries` grouped by `evtype`, can be introduced to illustrate impact on population health.
+```{r}
+storm_to_health <- storm %>%
+        select(evtype, fatalities, injuries) %>%
+        group_by(evtype) %>%
+        summarise(toll = sum(fatalities + injuries)) %>%
+        arrange(desc(toll))
+
+knitr::kable(storm_to_health, format = "markdown")
+```
+
+
+### Impact on Economy
+Similarly, economic impact can be evaluated by sum of `propdmg` and `cropdmg`. 
+```{r}
+storm_to_economy <- storm %>% 
+        select(evtype, propdmg, propdmgexp, cropdmg, cropdmgexp) %>%
+        mutate(propdmg_num = propdmg * (10 ^ propdmgexp), 
+               cropdmg_num = cropdmg * (10 ^ cropdmgexp)) %>%
+        group_by(evtype) %>%
+        summarise(total_damage = sum(propdmg_num + cropdmg_num)) %>%
+        arrange(desc(total_damage))
+knitr::kable(storm_to_economy, format = "markdown")
+```
+
+
+## Results
+
+According to the two tables above the weather events causing the most population health impact is "tornado", and "flood" the most economic impact.
+
+In addition, the top 10 weather events causing population health and economic impact are: 
+```{r}
+ggplot(storm_to_health[1:10,], aes(reorder(evtype, toll), toll)) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        theme(plot.margin = unit(rep(2,4), "lines")) + 
+        labs(title = "Top 10 Weather Events Causing Death and Injury") +
+        labs(x = "Event Type", y = "Toll")
+```
+
+```{r}
+ggplot(storm_to_economy[1:10,], aes(reorder(evtype, total_damage), total_damage)) +
+        geom_bar(stat = "identity") +
+        coord_flip() +
+        scale_y_continuous(labels = scales::dollar) +
+        theme(plot.margin = unit(rep(2,4), "lines")) + 
+        labs(title = "Top 10 Weather Events Causing Economic Damage") +
+        labs(x = "Event Type", y = "Economic Damage")
+```
+
+
+
+
+
+
+
